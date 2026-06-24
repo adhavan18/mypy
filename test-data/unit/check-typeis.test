@@ -997,3 +997,27 @@ def main(f: Callable[[], int | Awaitable[int]] | Callable[[], Awaitable[int]]) -
         reveal_type(f)  # N: Revealed type is "def () -> builtins.int | typing.Awaitable[builtins.int]"
 
 [builtins fixtures/tuple.pyi]
+
+[case testTypeIsCovariantAnyNarrowingNegative]
+# Regression test for https://github.com/python/mypy/issues/21641
+from typing import Any, Generic, TypeVar
+from typing_extensions import TypeIs
+
+T_co = TypeVar("T_co", covariant=True)
+T_inv = TypeVar("T_inv")
+
+class Source(Generic[T_co]): ...
+class Container(Generic[T_inv]): ...
+
+def is_source_obj(x: object) -> TypeIs[Source[object]]: ...
+def is_container_obj(x: object) -> TypeIs[Container[object]]: ...
+
+def f_covariant(x: int | Source[Any]) -> None:
+    assert not is_source_obj(x)
+    reveal_type(x)  # N: Revealed type is "builtins.int"
+
+def f_invariant(x: int | Container[Any]) -> None:
+    assert not is_container_obj(x)
+    reveal_type(x)  # N: Revealed type is "builtins.int | __main__.Container[Any]"
+
+[builtins fixtures/tuple.pyi]
