@@ -2168,6 +2168,51 @@ def try_restrict_literal_union(t: UnionType, s: Type) -> list[Type] | None:
     return new_items
 
 
+def _proper_subtype_with_covariant_any(t: Type, s: Type) -> bool:
+    """Check if t is a proper subtype of s, treating Any in covariant type-parameter
+    positions of t as that TypeVar's upper bound (usually object).
+
+    Used by restrict_subtype_away for TypeIs negative narrowing: e.g.
+    Source[Any] should be eliminated when TypeIs[Source[object]] is False
+    and Source has a covariant type parameter, because every concrete Source[T]
+    is a Source[object] by covariance.  Returns False for invariant Any so that
+    Container[Any] is *not* narrowed away (Container[int] ≠ Container[object]).
+    """
+    p_t = get_proper_type(t)
+    p_s = get_proper_type(s)
+    if not isinstance(p_t, Instance) or not isinstance(p_s, Instance):
+        return False
+    if not p_t.type.has_base(p_s.type.fullname):
+        return False
+    if not p_s.args:
+        return False
+    mapped = map_instance_to_supertype(p_t, p_s.type)
+    for t_arg, s_arg, tvar in zip(mapped.args, p_s.args, p_s.type.defn.type_vars):
+        if not isinstance(tvar, TypeVarType):
+            # TypeVarTuple / ParamSpec: fall back to strict comparison
+            if not is_proper_subtype(t_arg, s_arg, ignore_promotions=True):
+                return False
+            continue
+        variance = tvar.variance
+        if variance in (COVARIANT, VARIANCE_NOT_READY):
+            effective: Type = tvar.upper_bound if isinstance(get_proper_type(t_arg), AnyType) else t_arg
+            if not is_proper_subtype(effective, s_arg, ignore_promotions=True):
+                return False
+        elif variance == CONTRAVARIANT:
+            effective = UninhabitedType() if isinstance(get_proper_type(t_arg), AnyType) else t_arg
+            if not is_proper_subtype(s_arg, effective, ignore_promotions=True):
+                return False
+        else:  # INVARIANT
+            if isinstance(get_proper_type(t_arg), AnyType):
+                return False
+            if not (
+                is_proper_subtype(t_arg, s_arg, ignore_promotions=True)
+                and is_proper_subtype(s_arg, t_arg, ignore_promotions=True)
+            ):
+                return False
+    return True
+
+
 def restrict_subtype_away(t: Type, s: Type, *, consider_runtime_isinstance: bool = True) -> Type:
     """Return t minus s for runtime type assertions.
 
@@ -2202,6 +2247,8 @@ def restrict_subtype_away(t: Type, s: Type, *, consider_runtime_isinstance: bool
         if is_proper_subtype(t, s, ignore_promotions=True):
             return UninhabitedType()
         if is_proper_subtype(t, s, ignore_promotions=True, erase_instances=True):
+            return UninhabitedType()
+        if _proper_subtype_with_covariant_any(t, s):
             return UninhabitedType()
         return t
 
